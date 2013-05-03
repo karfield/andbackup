@@ -1,4 +1,26 @@
-#!/bin/bash python
+#!/bin/bash
+#
+# Copyright (C) 2013 Karfield Chen <github@karfield.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+magic='run-as-python ;-)'
+"""exec" python -E "$0" "$@" """#$magic"
+if __name__ == '__main__':
+  import sys
+  if sys.argv[-1] == '#%s' % magic:
+    del sys.argv[-1]
+del magic
 
 import sys,re,os,string,time
 import shutil as sh
@@ -11,11 +33,8 @@ except ImportError:
 import logging as log
 import threading
 
-topdir = '/tmp/'
-xml_db = topdir + '/android_devices.xml'
-log.basicConfig(filename = os.path.join('/tmp/', 'android-backup.log'),
-        format = "<%(levelname)s> %(funcName)s: %(message)s",
-        level = log.DEBUG, filemode = "a")
+_topdir = '/tmp'
+_xml_db = _topdir + '/devices.xml'
 
 def indent(el, level = 0):
     """
@@ -37,6 +56,15 @@ def indent(el, level = 0):
         if level and (not el.tail or not el.tail.strip()):
             el.tail = i
 
+def touch(fn, times = None):
+    """ just like 'touch'
+    """
+    with file(fn, 'a'):
+        os.utime(fn, times)
+    if os.path.exists(fn):
+        return True
+    return False
+
 class andbackup(threading.Thread):
     def __init__(self, sn):
         threading.Thread.__init__(self)
@@ -45,6 +73,7 @@ class andbackup(threading.Thread):
         attr = self.get_attributes()
         # create/retrieve a profile from 'android-device.xml'
         self.create_profile(attr)
+        self.cwd = os.chdir(self.workdir)
 
     def run(self):
         """
@@ -52,7 +81,7 @@ class andbackup(threading.Thread):
         """
         log.info("start to backup for %s" % self.name)
         # do some test 
-        self.adb_pull("/system/bin", "/tmp/bin")
+        self.adb_pull("/sdcard/DCIM", "photo-stuff")
 
     def adb_shell(self, cmds):
         p = sub.Popen(['adb', '-s', self.serial, "shell", cmds], stdout = sub.PIPE)
@@ -108,8 +137,9 @@ class andbackup(threading.Thread):
         match firstly device according to given attributes which most be interested
         create a xml entry in the 'android_devices.xml' file if none matched
         """
+        global _topdir
         try:
-            db = xml.parse(xml_db).getroot()
+            db = xml.parse(_xml_db).getroot()
         except xml.ParseError:
             db = xml.fromstring("<andbackup/>")
         match = False
@@ -131,9 +161,13 @@ class andbackup(threading.Thread):
             if di:
                 di.attrib['adate'] = ts
             indent(db)
-            xml.ElementTree(db).write(xml_db, encoding = "UTF-8", xml_declaration = True)
+            xml.ElementTree(db).write(_xml_db, encoding = "UTF-8", xml_declaration = True)
 
         if match:
+            self.name = di.attrib['name']
+            self.workdir = os.path.join(_topdir, di.attrib['path'])
+            if not os.path.exists(self.workdir):
+                os.makedirs(self.workdir)
             update_xmldb()
             return
 
@@ -181,17 +215,21 @@ class andbackup(threading.Thread):
 
         for n in range(1, 1000):
             # check the path we wanted, index new one if existed
-            path = "%s_%d" % (ppfx, n)
+            path = os.path.join(_topdir, "%s_%d" % (ppfx, n))
             if not os.path.exists(path):
                 # make the path for the device
+                try:
+                    os.makedirs(path)
+                except OSError:
+                    log.error("fail to makedirs %s" % path)
+                    continue
                 self.workdir = path
-                os.makedirs(self.workdir)
                 break
 
         # generate an xml entry for this device
         di = xml.Element("device", {
             'name': self.name,   # generated name
-            'path': os.path.basename(self.path),  # the folder to store all backup data
+            'path': os.path.basename(self.workdir),  # the folder to store all backup data
             'cdate': ts,    # create time, first plugin time
             'adate': '',    # last access time
             'mdate': ts     # last modify time
@@ -304,6 +342,9 @@ class andbackup(threading.Thread):
         """
         simplly call 'adb pull to pull something'
         """
+        #if not out.startswith('/'): # it's a relative path
+        #    out = os.path.join(self.workdir, out) # no need !!! we've chdir
+        #    into self.workdir now
         path = path.rstrip('\r\n')
         if check:
             ls = self.adb_shell('ls -l ' + path).readlines()
@@ -352,28 +393,60 @@ class andbackup(threading.Thread):
 
 if __name__ == "__main__":
 
+    # determine the backup root directory
+    if os.environ.has_key('ANDROID_AUTOBACKUP'):
+        _topdir = os.environ['ANDROID_AUTOBACKUP']
+
+    opt = OptionParser()
+    opt.add_option("-d", "--backup-dir", dest = "workdir", action = "store",
+            type = "string", help = "the backup directory")
+    opt.add_option("-L", "--log-level", dest = "loglevel", action = "store",
+            type = "string", help = "set log output level")
+    opt.add_option("-l", "--log-output", dest = "logout", action = "store",
+            type = "string", help = "set log output file")
+    (opts, args) = opt.parse_args()
+
+    # setup workdir
+    if opts.workdir:
+        _topdir = opts.workdir
+    if not os.path.exists(_topdir):
+        try:
+            os.makedirs(_topdir)
+        except OSError:
+            sys.exit()
+
+    # setup log stuff
+    loglevel = log.NOTSET
+    if opts.loglevel:
+        try:
+            loglevel = {
+                "none": log.NOTSET,
+                "debug": log.DEBUG,
+                "info": log.INFO,
+                "warning": log.WARNING,
+                "error": log.ERROR,
+                "critical": log.CRITICAL,
+                }[string.lower(opts.loglevel)]
+        except KeyError:
+            loglevel = log.NOTSET
+    if opts.logout:
+        logout = opts.logout
+    else:
+        logout = os.path.join(_topdir, "log.txt")
+    if touch(logout):
+        log.basicConfig(filename = logout,
+                format = "<%(levelname)s> %(funcName)s: %(message)s",
+                level = loglevel, filemode = "a")
+
+    # touch xml file, make sure it exit
+    _xml_db = os.path.join(_topdir, "devices.xml")
+    if not touch(_xml_db):
+        log.critical("cannot access to %s" % _xml_db)
+        sys.exit() # I haven't such permission to access
+
     log.info(80 * ">")
     log.info("start android-backuper on %s" %
             time.strftime('%Y/%m/%d-%H:%M:%S', time.localtime()))
-
-    # determine the backup root directory
-    if os.environ.has_key('ANDROID_AUTOBACKUP'):
-        topdir = os.environ['ANDROID_AUTOBACKUP']
-    opt = OptionParser()
-    opt.add_option("-d", "--backup-dir", dest="bkdir", action="store",
-            type="string", help="the backup directory")
-    (opts, args) = opt.parse_args()
-    if opts.bkdir:
-        topdir = opts.bkdir
-
-    log.info("set backup directory as %s" % topdir)
-
-    # touch xml file, make sure it exit
-    p = sub.Popen(['touch', xml_db]) 
-    p.wait()
-    if not os.path.exists(xml_db):
-        log.error("cannot access to %s" % xml_db)
-        sys.exit() # I haven't such permission to access
 
     # use 'adb devices' to check connected devices
     p = sub.Popen(['adb', 'devices'], stdout = sub.PIPE)
@@ -391,7 +464,7 @@ if __name__ == "__main__":
 
         # create sub-thread for backuping each device
         ab = andbackup(sn)
-        log.info("create android-backup worker...")
+        log.info("start threading backuper ...")
         ab.start()
         ab.join()
 
