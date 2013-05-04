@@ -80,8 +80,8 @@ class andbackup(threading.Thread):
         yeap! andbackup is a sub thread, it's can run parallelly
         """
         log.info("start to backup for %s" % self.name)
-        # do some test 
-        self.adb_pull("/sdcard/DCIM", "photo-stuff")
+
+        dirs = self.adb_shell("ls /sdcard/").read().split()
 
     def adb_shell(self, cmds):
         p = sub.Popen(['adb', '-s', self.serial, "shell", cmds], stdout = sub.PIPE)
@@ -106,7 +106,8 @@ class andbackup(threading.Thread):
                 continue
             k = m.group(1)
             v = m.group(2)
-            if (re.match(r"^ro\..*", k)):
+            #if (re.match(r"^ro\..*", k)):
+            if k.startswith("ro."):
                 attr[k[3:]] = v
             prop[k] = v
 
@@ -236,6 +237,7 @@ class andbackup(threading.Thread):
             })
         for st in store_attrs:
             if attr.has_key(st):
+                log.debug("append property %s %s" % (st, attr[st]))
                 di.append(xml.Element("property", {
                     'key': st,
                     'value': attr[st].decode('utf-8')
@@ -266,6 +268,7 @@ class andbackup(threading.Thread):
         dir_list = []
         curf = []
         contents.append('\n') # make last one can be processed
+        curd = None
         for ll in contents:
             l = ll.rstrip('\r\n')
             if len(l) < 2:
@@ -282,6 +285,8 @@ class andbackup(threading.Thread):
                     l.endswith("Permission denied"):
                 curd = None # ignore this dir
                 continue
+            if l.startswith("total"):
+                continue # skip
             m = re.match(r"^([^ ].*):$", l)
             if m:
                 curd = m.group(1)
@@ -342,8 +347,8 @@ class andbackup(threading.Thread):
         """
         simplly call 'adb pull to pull something'
         """
-        #if not out.startswith('/'): # it's a relative path
-        #    out = os.path.join(self.workdir, out) # no need !!! we've chdir
+        #if not out.startswith("/"): # it is a relative path
+        #    out = os.path.join(self.workdir, out) # no need !!! we have chdir
         #    into self.workdir now
         path = path.rstrip('\r\n')
         if check:
@@ -370,7 +375,7 @@ class andbackup(threading.Thread):
         # chdir to output
         cwd = os.getcwd()
         os.chdir(out)
-        log.debug("pulling %s ..." % path)
+        log.debug("pulling %s to %s ..." % (path, out))
         p = sub.Popen(['adb', '-s', self.serial, 'pull', path], stderr = sub.PIPE,
                 stdout = sub.PIPE)
         p.wait()
@@ -398,6 +403,8 @@ if __name__ == "__main__":
         _topdir = os.environ['ANDROID_AUTOBACKUP']
 
     opt = OptionParser()
+    opt.add_option("-p", "--adb-pull", dest = "src", action = "store",
+            type = "string", help = "backup device path directly")
     opt.add_option("-d", "--backup-dir", dest = "workdir", action = "store",
             type = "string", help = "the backup directory")
     opt.add_option("-L", "--log-level", dest = "loglevel", action = "store",
@@ -442,7 +449,7 @@ if __name__ == "__main__":
     _xml_db = os.path.join(_topdir, "devices.xml")
     if not touch(_xml_db):
         log.critical("cannot access to %s" % _xml_db)
-        sys.exit() # I haven't such permission to access
+        sys.exit() # I have not such permission to access
 
     log.info(80 * ">")
     log.info("start android-backuper on %s" %
@@ -452,6 +459,7 @@ if __name__ == "__main__":
     p = sub.Popen(['adb', 'devices'], stdout = sub.PIPE)
     p.wait()
     devs = p.stdout.readlines()
+
     for d in devs[1:]:
         ll = re.match(r"([\w\d]+)[ \t]*(\w+)", d)
         if not ll:
@@ -464,6 +472,13 @@ if __name__ == "__main__":
 
         # create sub-thread for backuping each device
         ab = andbackup(sn)
+
+        # if you specified some dir to pull directly, run once
+        if opts.src:
+            log.debug("basename %s" % os.path.basename(opts.src))
+            ab.adb_pull(opts.src, "DCIM", check = True) #os.path.basename(opts.src))
+            continue
+
         log.info("start threading backuper ...")
         ab.start()
         ab.join()
