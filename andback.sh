@@ -33,7 +33,7 @@ except ImportError:
 import logging as log
 import threading
 
-_topdir = '/tmp'
+_topdir = '~/AndroidBackup/'
 _xml_db = _topdir + '/devices.xml'
 
 def indent(el, level = 0):
@@ -59,6 +59,9 @@ def indent(el, level = 0):
 def touch(fn, times = None):
     """ just like 'touch'
     """
+    fn = fn.rstrip('/')
+    if not os.path.exists(os.path.dirname(fn)):
+        os.makedirs(os.path.dirname(fn))
     with file(fn, 'a'):
         os.utime(fn, times)
     if os.path.exists(fn):
@@ -81,7 +84,8 @@ class andbackup(threading.Thread):
         """
         log.info("start to backup for %s" % self.name)
 
-        dirs = self.adb_shell("ls /sdcard/").read().split()
+        #dirs = self.adb_shell("ls /sdcard/").read().split()
+        self.scan_dir("/sdcard/DCIM/", "DCIM")
 
     def adb_shell(self, cmds):
         p = sub.Popen(['adb', '-s', self.serial, "shell", cmds], stdout = sub.PIPE)
@@ -339,7 +343,9 @@ class andbackup(threading.Thread):
         if out:
             # output into the file
             indent(top)
-            xml.ElementTree(top).write(os.path.join(out, "file_list.xml"),
+            opath = os.path.join(out, "file_list.xml")
+            touch(opath)
+            xml.ElementTree(top).write(opath,
                 encoding="UTF-8", xml_declaration=True)
         return string.atoi(top.attrib['size'])
 
@@ -460,6 +466,7 @@ if __name__ == "__main__":
     p.wait()
     devs = p.stdout.readlines()
 
+    n = 0
     for d in devs[1:]:
         ll = re.match(r"([\w\d]+)[ \t]*(\w+)", d)
         if not ll:
@@ -469,18 +476,24 @@ if __name__ == "__main__":
 
         if st != "device":
             continue
+        n += 1
+        print "found device: %s, start to handle it" % sn
 
         # create sub-thread for backuping each device
         ab = andbackup(sn)
 
         # if you specified some dir to pull directly, run once
         if opts.src:
-            log.debug("basename %s" % os.path.basename(opts.src))
-            ab.adb_pull(opts.src, "DCIM", check = True) #os.path.basename(opts.src))
-            continue
+            for p in opts.src.split(';'):
+                ab.adb_pull(p, p.replace('/', '_'), check = True)
+                continue
 
         log.info("start threading backuper ...")
         ab.start()
         ab.join()
 
+    if not n:
+        print "no device handled!"
+    else:
+        print "finished to backup %d android device(s)" % n
     log.info("finished to backup android device(s)")
